@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: |cff1784d1ElvUI|r QuickChat
+## Notes: Adds a Quick Chat channel-switch bar as a tab under ElvUI's Chat options.
+## Version: 1.0.0
+## RequiredDeps: ElvUI
+
+ElvUI_QuickChat.lua
