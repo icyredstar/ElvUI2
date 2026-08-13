@@ -6,7 +6,8 @@ local ElvUF = E.oUF
 
 local _G = _G
 local select, strsplit, tostring = select, strsplit, tostring
-local pairs, ipairs, wipe, tinsert = pairs, ipairs, wipe, tinsert
+local pairs, ipairs, wipe, tinsert, tremove = pairs, ipairs, wipe, tinsert, tremove
+local min = min
 
 local CreateFrame = CreateFrame
 local GetCVar = GetCVar
@@ -720,6 +721,74 @@ function NP:Initialize()
 	ElvUF:SpawnNamePlates('ElvNP_', function(nameplate, event, unit)
 		NP:NamePlateCallBack(nameplate, event, unit)
 	end)
+
+	----------------------------------------------------------------------
+	-- Nameplate construction burst throttle
+	--
+	-- oUF's nameplate driver (oUF_NamePlateDriver) handles every
+	-- NAME_PLATE_UNIT_ADDED event synchronously and immediately: for a
+	-- brand-new physical nameplate frame that means a full StylePlate()
+	-- pass (health, name, castbar, auras, threat, class power, etc - ~20
+	-- sub-objects) with zero yielding between units. That's invisible with
+	-- a handful of dungeon mobs, but logging into a packed hub can fire
+	-- 100+ of these in the same tick, all processed back-to-back in one
+	-- uninterrupted stretch of Lua - which is exactly the kind of burst
+	-- that freezes/crashes the client.
+	--
+	-- This intercepts NAME_PLATE_UNIT_ADDED before oUF's driver sees it,
+	-- queues the unit, and feeds the driver's own unmodified event handler
+	-- a small batch per frame instead. Total work done is identical - it's
+	-- only spread across a handful of frames instead of one. Every other
+	-- event (removal, target change, faction/flag changes) is left fully
+	-- untouched and immediate.
+	----------------------------------------------------------------------
+	local NP_ADD_BATCH_SIZE = 6 -- new plates fully constructed per frame
+
+	local driver = _G.oUF_NamePlateDriver
+	if driver then
+		local driverOnEvent = driver:GetScript('OnEvent')
+		driver:UnregisterEvent('NAME_PLATE_UNIT_ADDED')
+
+		local pending, pendingSet, pendingCount = {}, {}, 0
+
+		local drain = CreateFrame('Frame')
+		drain:Hide()
+		drain:SetScript('OnUpdate', function(self)
+			if pendingCount == 0 then
+				self:Hide()
+				return
+			end
+
+			local n = min(NP_ADD_BATCH_SIZE, pendingCount)
+			for _ = 1, n do
+				local unit = tremove(pending, 1)
+				pendingCount = pendingCount - 1
+				if unit then
+					pendingSet[unit] = nil
+					if UnitExists(unit) then
+						driverOnEvent(driver, 'NAME_PLATE_UNIT_ADDED', unit)
+					end
+				end
+			end
+
+			if pendingCount == 0 then
+				self:Hide()
+			end
+		end)
+
+		local catcher = CreateFrame('Frame')
+		catcher:RegisterEvent('NAME_PLATE_UNIT_ADDED')
+		catcher:SetScript('OnEvent', function(_, _, unit)
+			if unit and not pendingSet[unit] then
+				pendingSet[unit] = true
+				pendingCount = pendingCount + 1
+				tinsert(pending, unit)
+				drain:Show()
+			end
+		end)
+
+		NP.namePlateAddThrottle = catcher -- keep a reference alive
+	end
 
 	NP:RegisterEvent('PLAYER_REGEN_ENABLED')
 	NP:RegisterEvent('PLAYER_REGEN_DISABLED')
